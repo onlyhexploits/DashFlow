@@ -187,6 +187,8 @@ local GlyphFallback = {
 	["zap"] = "⚡",
 	["star"] = "★",
 	["wifi"] = "⇅",
+	["chevron-right"] = "›",
+	["chevron-down"] = "▾",
 }
 
 local function resolveImage(name)
@@ -998,16 +1000,14 @@ function Section:AddButton(text, callback)
 		Parent = frame,
 	})
 
-	local arrow = label({
-		Text = "›",
-		Font = Font.GothamBold,
-		TextSize = 22,
-		TextColor3 = Theme.SubText,
-		TextXAlignment = TextAlign.Center,
+	local arrowHolder = create("Frame", {
+		BackgroundTransparency = 1,
 		Size = UDim2.fromOffset(24, 38),
-		Position = UDim2.new(1, -32, 0, -1),
+		Position = UDim2.new(1, -32, 0, 0),
 		Parent = frame,
 	})
+	local arrow = makeIcon(arrowHolder, "chevron-right", 16, Theme.SubText)
+	local arrowColor = arrow:IsA("ImageLabel") and "ImageColor3" or "TextColor3"
 
 	local button = create("TextButton", {
 		Size = UDim2.fromScale(1, 1),
@@ -1019,12 +1019,14 @@ function Section:AddButton(text, callback)
 
 	button.MouseEnter:Connect(function()
 		tween(frame, { BackgroundColor3 = Theme.ElementHover }, 0.15)
-		tween(arrow, { TextColor3 = Theme.Accent, Position = UDim2.new(1, -28, 0, -1) }, 0.2)
+		tween(arrow, { [arrowColor] = Theme.Accent }, 0.2)
+		tween(arrowHolder, { Position = UDim2.new(1, -28, 0, 0) }, 0.2)
 	end)
 
 	button.MouseLeave:Connect(function()
 		tween(frame, { BackgroundColor3 = Theme.Element }, 0.2)
-		tween(arrow, { TextColor3 = Theme.SubText, Position = UDim2.new(1, -32, 0, -1) }, 0.2)
+		tween(arrow, { [arrowColor] = Theme.SubText }, 0.2)
+		tween(arrowHolder, { Position = UDim2.new(1, -32, 0, 0) }, 0.2)
 	end)
 
 	button.MouseButton1Down:Connect(function()
@@ -1292,17 +1294,14 @@ function Section:AddDropdown(text, options, default, callback)
 		Parent = frame,
 	})
 
-	local arrow = label({
-		Text = "▾",
-		Font = Font.GothamBold,
-		TextSize = 14,
-		TextColor3 = Theme.SubText,
-		TextXAlignment = TextAlign.Center,
+	local arrow = create("Frame", {
+		BackgroundTransparency = 1,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.new(1, -20, 0, 19),
 		Size = UDim2.fromOffset(20, 20),
 		Parent = frame,
 	})
+	makeIcon(arrow, "chevron-down", 16, Theme.SubText)
 
 	local list = create("ScrollingFrame", {
 		Position = UDim2.fromOffset(8, 44),
