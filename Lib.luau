@@ -7,6 +7,12 @@ local CoreGui = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
 
+local IconsV2
+pcall(function()
+	IconsV2 = loadstring(game:HttpGetAsync("https://raw.githubusercontent.com/Footagesus/Icons/main/Main-v2.lua"))()
+	IconsV2.SetIconsType("lucide")
+end)
+
 local Font = Enum.Font
 local TextAlign = Enum.TextXAlignment
 local Auto = Enum.AutomaticSize
@@ -50,22 +56,22 @@ local Theme = {
 DashFlow.Theme = Theme
 
 DashFlow.Icons = {
-	Logo = "◎",
-	Action = "◈",
-	Spark = "◈",
-	Home = "⌂",
-	Settings = "⚙",
-	Player = "☻",
-	Players = "☺",
-	Server = "☁",
-	Chart = "▥",
-	Combat = "⚔",
-	Visuals = "◉",
-	Misc = "☰",
-	Info = "ⓘ",
-	Bolt = "⚡",
-	Star = "★",
-	Latency = "⇅",
+	Logo = "sparkles",
+	Action = "layout-dashboard",
+	Spark = "sparkles",
+	Home = "house",
+	Settings = "settings",
+	Player = "user",
+	Players = "users",
+	Server = "server",
+	Chart = "activity",
+	Combat = "swords",
+	Visuals = "eye",
+	Misc = "menu",
+	Info = "info",
+	Bolt = "zap",
+	Star = "star",
+	Latency = "wifi",
 }
 
 local function create(className, properties, children)
@@ -165,26 +171,76 @@ local function label(properties)
 	return create("TextLabel", base)
 end
 
+local GlyphFallback = {
+	["sparkles"] = "◈",
+	["layout-dashboard"] = "◈",
+	["house"] = "⌂",
+	["settings"] = "⚙",
+	["user"] = "☻",
+	["users"] = "☺",
+	["server"] = "☁",
+	["activity"] = "▥",
+	["swords"] = "⚔",
+	["eye"] = "◉",
+	["menu"] = "☰",
+	["info"] = "ⓘ",
+	["zap"] = "⚡",
+	["star"] = "★",
+	["wifi"] = "⇅",
+}
+
+local function resolveImage(name)
+	if not IconsV2 or type(name) ~= "string" then
+		return nil
+	end
+	local ok, result = pcall(function()
+		return IconsV2.GetIcon(name)
+	end)
+	if ok and result then
+		return result
+	end
+	return nil
+end
+
 local function makeIcon(parent, icon, size, color)
 	if type(icon) == "number" then
 		icon = "rbxassetid://" .. icon
 	end
-	if type(icon) == "string" and icon:sub(1, 6) == "rbxass" then
-		return create("ImageLabel", {
+
+	local image = icon
+	if type(icon) == "string" and icon:sub(1, 6) ~= "rbxass" then
+		image = resolveImage(icon)
+	end
+
+	if type(image) == "table" or (type(image) == "string" and image ~= "") then
+		local properties = {
 			AnchorPoint = Vector2.new(0.5, 0.5),
 			Position = UDim2.fromScale(0.5, 0.5),
 			Size = UDim2.fromOffset(size, size),
 			BackgroundTransparency = 1,
-			Image = icon,
 			ImageColor3 = color,
 			Parent = parent,
-		})
+		}
+		if type(image) == "table" then
+			properties.Image = image.Image or image[1] or ""
+			properties.ImageRectSize = image.ImageRectSize or Vector2.new()
+			properties.ImageRectOffset = image.ImageRectPosition or image.ImageRectOffset or Vector2.new()
+		else
+			properties.Image = image
+		end
+		return create("ImageLabel", properties)
 	end
+
+	local text = GlyphFallback[icon]
+	if not text then
+		text = (type(icon) == "string" and (utf8.len(icon) or 99) <= 2) and icon or "•"
+	end
+
 	return create("TextLabel", {
 		Size = UDim2.fromScale(1, 1),
 		BackgroundTransparency = 1,
 		Font = Font.GothamBold,
-		Text = icon or "•",
+		Text = text,
 		TextColor3 = color,
 		TextSize = size,
 		Parent = parent,
