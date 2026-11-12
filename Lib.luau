@@ -72,7 +72,6 @@ DashFlow.Icons = {
 	Bolt = "zap",
 	Star = "star",
 	Latency = "wifi",
-    Dashboard = "dashboard",
 }
 
 local function create(className, properties, children)
@@ -392,45 +391,10 @@ function DashFlow.new(config)
 		Parent = main,
 	}, { corner(16), stroke(Theme.Stroke) })
 
-	local action = create("TextButton", {
-		Name = "Action",
-		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 10),
-		Size = UDim2.fromOffset(44, 44),
-		BackgroundColor3 = Theme.Accent,
-		AutoButtonColor = false,
-		Text = "",
-		Parent = sidebar,
-	}, { corner(14) })
-	makeIcon(action, config.ActionIcon or DashFlow.Icons.Action, 20, INK)
-
-	action.MouseEnter:Connect(function()
-		tween(action, { BackgroundColor3 = Theme.Accent:Lerp(WHITE, 0.25) }, 0.2)
-	end)
-	action.MouseLeave:Connect(function()
-		tween(action, { BackgroundColor3 = Theme.Accent }, 0.2)
-	end)
-	action.MouseButton1Click:Connect(function()
-		if config.ActionCallback then
-			fire(config.ActionCallback, self)
-		else
-			self:Toggle(false)
-		end
-	end)
-
-	create("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 64),
-		Size = UDim2.fromOffset(28, 1),
-		BackgroundColor3 = Theme.Stroke,
-		BorderSizePixel = 0,
-		Parent = sidebar,
-	})
-
 	self.TabHolder = create("Frame", {
 		Name = "Tabs",
-		Position = UDim2.fromOffset(0, 76),
-		Size = UDim2.new(1, 0, 1, -86),
+		Position = UDim2.fromOffset(0, 10),
+		Size = UDim2.new(1, 0, 1, -20),
 		BackgroundTransparency = 1,
 		Parent = sidebar,
 	}, { listLayout(8, Direction.Vertical, HAlign.Center) })
@@ -442,6 +406,28 @@ function DashFlow.new(config)
 		BackgroundTransparency = 1,
 		Active = true,
 		Parent = main,
+	})
+
+	self.HeaderToken = 0
+
+	self.HeaderTitle = label({
+		Font = Font.GothamBold,
+		TextSize = 18,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextTransparency = 1,
+		Position = UDim2.fromOffset(2, 6),
+		Size = UDim2.new(0.5, -150, 0, 22),
+		Parent = header,
+	})
+
+	self.HeaderDesc = label({
+		TextSize = 11,
+		TextColor3 = Theme.SubText,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		TextTransparency = 1,
+		Position = UDim2.fromOffset(2, 28),
+		Size = UDim2.new(0.5, -150, 0, 16),
+		Parent = header,
 	})
 
 	local chip = create("Frame", {
@@ -489,20 +475,85 @@ function DashFlow.new(config)
 		Parent = main,
 	})
 
-	self.Launcher = create("TextButton", {
-		Name = "Launcher",
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.new(0, 36, 0.5, 0),
-		Size = UDim2.fromOffset(44, 44),
-		BackgroundColor3 = Theme.Accent,
+	local islandScale = create("UIScale", { Scale = 1 })
+	self.IslandScale = islandScale
+	self.IslandAmplitude = 1
+
+	local island = create("TextButton", {
+		Name = "Island",
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 8),
+		Size = UDim2.fromOffset(0, 36),
+		AutomaticSize = Auto.X,
+		BackgroundColor3 = Color3.new(0, 0, 0),
+		BorderSizePixel = 0,
 		AutoButtonColor = false,
 		Text = "",
-		Visible = false,
+		ZIndex = 60,
 		Parent = gui,
-	}, { corner(14), stroke(Theme.Pink, 1, 0.5) })
-	makeIcon(self.Launcher, config.ActionIcon or DashFlow.Icons.Action, 20, INK)
-	self.Launcher.MouseButton1Click:Connect(function()
-		self:Toggle(true)
+	}, {
+		corner(18),
+		stroke(Color3.fromRGB(38, 38, 52), 1, 0.2),
+		padding(0, 0, 16, 16),
+		listLayout(14, Direction.Horizontal, HAlign.Left, VAlign.Center),
+		islandScale,
+	})
+	self.Island = island
+
+	self.IslandTitle = label({
+		Text = self.Name,
+		Font = Font.GothamBold,
+		TextSize = 12,
+		AutomaticSize = Auto.X,
+		Size = UDim2.fromOffset(0, 36),
+		LayoutOrder = 1,
+		ZIndex = 61,
+		Parent = island,
+	})
+
+	local visualizer = create("Frame", {
+		Size = UDim2.fromOffset(27, 20),
+		BackgroundTransparency = 1,
+		LayoutOrder = 2,
+		ZIndex = 61,
+		Parent = island,
+	})
+
+	local islandBars = {}
+	for index = 1, 5 do
+		islandBars[index] = create("Frame", {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, (index - 1) * 6, 0.5, 0),
+			Size = UDim2.fromOffset(3, 4),
+			BackgroundColor3 = Theme.Purple:Lerp(Theme.Pink, (index - 1) / 4),
+			BorderSizePixel = 0,
+			ZIndex = 62,
+			Parent = visualizer,
+		}, { corner(2) })
+	end
+
+	task.spawn(function()
+		local rng = Random.new()
+		while self.Alive do
+			for _, bar in ipairs(islandBars) do
+				local barHeight = math.floor(4 + rng:NextNumber() * 14 * self.IslandAmplitude)
+				tween(bar, { Size = UDim2.fromOffset(3, barHeight) }, 0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+			end
+			task.wait(0.22)
+		end
+	end)
+
+	island.MouseButton1Down:Connect(function()
+		tween(islandScale, { Scale = 0.92 }, 0.1)
+	end)
+	island.MouseButton1Up:Connect(function()
+		tween(islandScale, { Scale = 1 }, 0.35, Enum.EasingStyle.Back)
+	end)
+	island.MouseLeave:Connect(function()
+		tween(islandScale, { Scale = 1 }, 0.35, Enum.EasingStyle.Back)
+	end)
+	island.MouseButton1Click:Connect(function()
+		self:Toggle()
 	end)
 
 	self.NotifyHolder = create("Frame", {
@@ -584,11 +635,15 @@ function DashFlow:Toggle(state)
 	self.ToggleToken += 1
 	local token = self.ToggleToken
 
+	self.IslandAmplitude = state and 1 or 0.35
+	tween(self.IslandTitle, { TextTransparency = state and 0 or 0.45 }, 0.3)
+	self.IslandScale.Scale = 1.1
+	tween(self.IslandScale, { Scale = 1 }, 0.5, Enum.EasingStyle.Back)
+
 	if state then
 		if not self.Main.Visible then
 			self.UIScale.Scale = self.BaseScale * 0.6
 		end
-		self.Launcher.Visible = false
 		self.Main.Visible = true
 		tween(self.UIScale, { Scale = self.BaseScale }, 0.4, Enum.EasingStyle.Back)
 	else
@@ -598,11 +653,32 @@ function DashFlow:Toggle(state)
 				return
 			end
 			self.Main.Visible = false
-			self.Launcher.Size = UDim2.fromOffset(0, 0)
-			self.Launcher.Visible = true
-			tween(self.Launcher, { Size = UDim2.fromOffset(44, 44) }, 0.35, Enum.EasingStyle.Back)
 		end)
 	end
+end
+
+function DashFlow:_setHeader(title, desc)
+	self.HeaderToken += 1
+	local token = self.HeaderToken
+	local titleLabel = self.HeaderTitle
+	local descLabel = self.HeaderDesc
+	local hasDesc = desc ~= nil and desc ~= ""
+	local titleY = hasDesc and 6 or 14
+
+	local leaving = tween(titleLabel, { TextTransparency = 1, Position = UDim2.fromOffset(-10, titleY) }, 0.12)
+	tween(descLabel, { TextTransparency = 1, Position = UDim2.fromOffset(-10, 28) }, 0.12)
+
+	leaving.Completed:Connect(function()
+		if self.HeaderToken ~= token then
+			return
+		end
+		titleLabel.Text = title
+		descLabel.Text = hasDesc and desc or ""
+		titleLabel.Position = UDim2.fromOffset(16, titleY)
+		descLabel.Position = UDim2.fromOffset(16, 28)
+		tween(titleLabel, { TextTransparency = 0, Position = UDim2.fromOffset(2, titleY) }, 0.4)
+		tween(descLabel, { TextTransparency = hasDesc and 0 or 1, Position = UDim2.fromOffset(2, 28) }, 0.4)
+	end)
 end
 
 function DashFlow:Destroy()
@@ -722,6 +798,7 @@ function DashFlow:AddTab(config)
 	tab.Window = self
 	tab.Name = config.Name or ("Tab " .. (#self.Tabs + 1))
 	tab.Orders = { Left = 0, Right = 0 }
+	tab.Desc = config.Desc or config.Description
 
 	local button = create("TextButton", {
 		Name = tab.Name,
@@ -888,6 +965,7 @@ function Tab:_setActive(active)
 	tween(self.Icon, { [colorProperty] = active and Theme.Accent or Theme.SubText }, 0.25)
 	self.Page.Visible = active
 	if active then
+		self.Window:_setHeader(self.Name, self.Desc)
 		self.Page.Position = UDim2.fromOffset(0, 16)
 		tween(self.Page, { Position = UDim2.fromOffset(0, 0) }, 0.45, Enum.EasingStyle.Quint)
 	end
@@ -1504,7 +1582,8 @@ function DashFlow:AddDashboard(config)
 
 	local tab = self:AddTab({
 		Name = config.Name or "Dashboard",
-		Icon = config.Icon or DashFlow.Icons.Dashboard,
+		Icon = config.Icon or DashFlow.Icons.Home,
+		Desc = config.Desc or "Live overview of your session, server and performance",
 	})
 
 	local top = tab:GetTop()
