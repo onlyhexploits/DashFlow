@@ -439,6 +439,10 @@ function DashFlow.new(config)
 		Parent = header,
 	}, { corner(20), stroke(Theme.Stroke) })
 
+	self.UserChip = chip
+	self.UserInfoEnabled = config.UserInfoEnabled ~= false
+	chip.Visible = self.UserInfoEnabled
+
 	local chipAvatar = create("ImageLabel", {
 		Position = UDim2.fromOffset(4, 3),
 		Size = UDim2.fromOffset(34, 34),
@@ -482,8 +486,8 @@ function DashFlow.new(config)
 	local island = create("TextButton", {
 		Name = "Island",
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 8),
-		Size = UDim2.fromOffset(0, 36),
+		Position = UDim2.new(0.5, 0, 0, 6),
+		Size = UDim2.fromOffset(0, 28),
 		AutomaticSize = Auto.X,
 		BackgroundColor3 = Color3.new(0, 0, 0),
 		BorderSizePixel = 0,
@@ -492,10 +496,10 @@ function DashFlow.new(config)
 		ZIndex = 60,
 		Parent = gui,
 	}, {
-		corner(18),
+		corner(14),
 		stroke(Color3.fromRGB(38, 38, 52), 1, 0.2),
-		padding(0, 0, 16, 16),
-		listLayout(14, Direction.Horizontal, HAlign.Left, VAlign.Center),
+		padding(0, 0, 12, 12),
+		listLayout(10, Direction.Horizontal, HAlign.Left, VAlign.Center),
 		islandScale,
 	})
 	self.Island = island
@@ -503,16 +507,16 @@ function DashFlow.new(config)
 	self.IslandTitle = label({
 		Text = self.Name,
 		Font = Font.GothamBold,
-		TextSize = 12,
+		TextSize = 11,
 		AutomaticSize = Auto.X,
-		Size = UDim2.fromOffset(0, 36),
+		Size = UDim2.fromOffset(0, 28),
 		LayoutOrder = 1,
 		ZIndex = 61,
 		Parent = island,
 	})
 
 	local visualizer = create("Frame", {
-		Size = UDim2.fromOffset(27, 20),
+		Size = UDim2.fromOffset(22, 14),
 		BackgroundTransparency = 1,
 		LayoutOrder = 2,
 		ZIndex = 61,
@@ -523,8 +527,8 @@ function DashFlow.new(config)
 	for index = 1, 5 do
 		islandBars[index] = create("Frame", {
 			AnchorPoint = Vector2.new(0, 0.5),
-			Position = UDim2.new(0, (index - 1) * 6, 0.5, 0),
-			Size = UDim2.fromOffset(3, 4),
+			Position = UDim2.new(0, (index - 1) * 5, 0.5, 0),
+			Size = UDim2.fromOffset(2, 3),
 			BackgroundColor3 = Theme.Purple:Lerp(Theme.Pink, (index - 1) / 4),
 			BorderSizePixel = 0,
 			ZIndex = 62,
@@ -536,8 +540,8 @@ function DashFlow.new(config)
 		local rng = Random.new()
 		while self.Alive do
 			for _, bar in ipairs(islandBars) do
-				local barHeight = math.floor(4 + rng:NextNumber() * 14 * self.IslandAmplitude)
-				tween(bar, { Size = UDim2.fromOffset(3, barHeight) }, 0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+				local barHeight = math.floor(3 + rng:NextNumber() * 9 * self.IslandAmplitude)
+				tween(bar, { Size = UDim2.fromOffset(2, barHeight) }, 0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
 			end
 			task.wait(0.22)
 		end
@@ -653,6 +657,24 @@ function DashFlow:Toggle(state)
 				return
 			end
 			self.Main.Visible = false
+		end)
+	end
+end
+
+function DashFlow:SetUserInfoEnabled(state)
+	state = state and true or false
+	self.UserInfoEnabled = state
+	local chip = self.UserChip
+	if state then
+		chip.Position = UDim2.new(1, 24, 0.5, 0)
+		chip.Visible = true
+		tween(chip, { Position = UDim2.new(1, -2, 0.5, 0) }, 0.4, Enum.EasingStyle.Back)
+	else
+		local leaving = tween(chip, { Position = UDim2.new(1, 24, 0.5, 0) }, 0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+		leaving.Completed:Connect(function()
+			if not self.UserInfoEnabled then
+				chip.Visible = false
+			end
 		end)
 	end
 end
