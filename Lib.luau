@@ -72,6 +72,7 @@ DashFlow.Icons = {
 	Bolt = "zap",
 	Star = "star",
 	Latency = "wifi",
+    Dashboard = "dashboard",
 }
 
 local function create(className, properties, children)
@@ -1503,7 +1504,7 @@ function DashFlow:AddDashboard(config)
 
 	local tab = self:AddTab({
 		Name = config.Name or "Dashboard",
-		Icon = config.Icon or DashFlow.Icons.Home,
+		Icon = config.Icon or DashFlow.Icons.Dashboard,
 	})
 
 	local top = tab:GetTop()
