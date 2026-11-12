@@ -51,12 +51,12 @@ DashFlow.Theme = Theme
 
 DashFlow.Icons = {
 	Logo = "◎",
-	Action = "✦",
-	Spark = "✦",
+	Action = "◈",
+	Spark = "◈",
 	Home = "⌂",
 	Settings = "⚙",
-	Player = "☺",
-	Players = "☻",
+	Player = "☻",
+	Players = "☺",
 	Server = "☁",
 	Chart = "▥",
 	Combat = "⚔",
@@ -284,10 +284,20 @@ function DashFlow.new(config)
 	end
 
 	local camera = workspace.CurrentCamera
-	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
 	local requested = config.Size or Vector2.new(820, 520)
-	local width = math.min(requested.X, viewport.X - 24)
-	local height = math.min(requested.Y, viewport.Y - 24)
+	local minScale = config.MinScale or 0.7
+
+	local function measure()
+		local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+		local fitScale = math.min(1, (viewport.X - 24) / requested.X, (viewport.Y - 24) / requested.Y)
+		local scale = math.clamp(fitScale, minScale, 1)
+		local fittedWidth = math.min(requested.X, (viewport.X - 24) / scale)
+		local fittedHeight = math.min(requested.Y, (viewport.Y - 24) / scale)
+		return scale, fittedWidth, fittedHeight
+	end
+
+	local baseScale, width, height = measure()
+	self.BaseScale = baseScale
 
 	local gui = create("ScreenGui", {
 		Name = guiName,
@@ -299,7 +309,7 @@ function DashFlow.new(config)
 	})
 	self.Gui = gui
 
-	local uiScale = create("UIScale", { Scale = 1 })
+	local uiScale = create("UIScale", { Scale = baseScale })
 	self.UIScale = uiScale
 
 	local main = create("Frame", {
@@ -373,25 +383,6 @@ function DashFlow.new(config)
 		BackgroundTransparency = 1,
 		Active = true,
 		Parent = main,
-	})
-
-	local logo = create("Frame", {
-		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 2, 0.5, 0),
-		Size = UDim2.fromOffset(32, 32),
-		BackgroundColor3 = WHITE,
-		BorderSizePixel = 0,
-		Parent = header,
-	}, { corner(10), gradient(Theme.Purple, Theme.Pink, 45) })
-	makeIcon(logo, DashFlow.Icons.Logo, 18, WHITE)
-
-	label({
-		Text = self.Name,
-		Font = Font.GothamBold,
-		TextSize = 18,
-		Position = UDim2.fromOffset(44, 0),
-		Size = UDim2.new(0.5, -44, 1, 0),
-		Parent = header,
 	})
 
 	local chip = create("Frame", {
@@ -479,7 +470,7 @@ function DashFlow.new(config)
 
 	self:_connect(UserInputService.InputChanged, function(input)
 		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-			local delta = input.Position - dragStart
+			local delta = (input.Position - dragStart) / uiScale.Scale
 			main.Position = UDim2.new(
 				startPosition.X.Scale,
 				startPosition.X.Offset + delta.X,
@@ -501,9 +492,20 @@ function DashFlow.new(config)
 		end
 	end)
 
+	if camera then
+		self:_connect(camera:GetPropertyChangedSignal("ViewportSize"), function()
+			local scale, fittedWidth, fittedHeight = measure()
+			self.BaseScale = scale
+			main.Size = UDim2.fromOffset(fittedWidth, fittedHeight)
+			if self.Visible then
+				uiScale.Scale = scale
+			end
+		end)
+	end
+
 	main.Visible = true
-	uiScale.Scale = 0.6
-	tween(uiScale, { Scale = 1 }, 0.5, Enum.EasingStyle.Back)
+	uiScale.Scale = baseScale * 0.6
+	tween(uiScale, { Scale = baseScale }, 0.5, Enum.EasingStyle.Back)
 
 	return self
 end
@@ -525,11 +527,11 @@ function DashFlow:Toggle(state)
 
 	if state then
 		if not self.Main.Visible then
-			self.UIScale.Scale = 0.6
+			self.UIScale.Scale = self.BaseScale * 0.6
 		end
 		self.Launcher.Visible = false
 		self.Main.Visible = true
-		tween(self.UIScale, { Scale = 1 }, 0.4, Enum.EasingStyle.Back)
+		tween(self.UIScale, { Scale = self.BaseScale }, 0.4, Enum.EasingStyle.Back)
 	else
 		local closing = tween(self.UIScale, { Scale = 0.05 }, 0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
 		closing.Completed:Connect(function()
@@ -678,41 +680,68 @@ function DashFlow:AddTab(config)
 
 	local icon = makeIcon(button, config.Icon or DashFlow.Icons.Spark, 20, Theme.SubText)
 
-	local tooltip = create("CanvasGroup", {
+	local tipStroke = stroke(Theme.Stroke, 1, 1)
+
+	local tipLabel = label({
+		Text = tab.Name,
+		TextSize = 12,
+		TextTransparency = 1,
+		AutomaticSize = Auto.XY,
+		Size = UDim2.fromOffset(0, 0),
+		ZIndex = 21,
+	})
+
+	local tooltip = create("Frame", {
 		AnchorPoint = Vector2.new(0, 0.5),
 		Position = UDim2.new(1, 10, 0.5, 0),
 		Size = UDim2.fromOffset(0, 0),
 		AutomaticSize = Auto.XY,
 		BackgroundColor3 = Theme.Element,
-		GroupTransparency = 1,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Visible = false,
 		ZIndex = 20,
 		Parent = button,
-	}, {
-		corner(8),
-		stroke(Theme.Stroke),
-		padding(6, 6, 10, 10),
-		label({
-			Text = tab.Name,
-			TextSize = 12,
-			AutomaticSize = Auto.XY,
-			Size = UDim2.fromOffset(0, 0),
-			ZIndex = 21,
-		}),
-	})
+	}, { corner(8), tipStroke, padding(6, 6, 10, 10), tipLabel })
+
+	local tipToken = 0
+
+	local function showTip(show)
+		tipToken += 1
+		local token = tipToken
+		if show then
+			if not UserInputService.MouseEnabled then
+				return
+			end
+			tooltip.Visible = true
+			tween(tooltip, { BackgroundTransparency = 0, Position = UDim2.new(1, 18, 0.5, 0) }, 0.2)
+			tween(tipLabel, { TextTransparency = 0 }, 0.2)
+			tween(tipStroke, { Transparency = 0 }, 0.2)
+		else
+			local hiding = tween(tooltip, { BackgroundTransparency = 1, Position = UDim2.new(1, 10, 0.5, 0) }, 0.15)
+			tween(tipLabel, { TextTransparency = 1 }, 0.15)
+			tween(tipStroke, { Transparency = 1 }, 0.15)
+			hiding.Completed:Connect(function()
+				if tipToken == token then
+					tooltip.Visible = false
+				end
+			end)
+		end
+	end
 
 	tab.Button = button
 	tab.ButtonStroke = buttonStroke
 	tab.Icon = icon
 
 	button.MouseEnter:Connect(function()
-		tween(tooltip, { GroupTransparency = 0, Position = UDim2.new(1, 18, 0.5, 0) }, 0.2)
+		showTip(true)
 		if self.ActiveTab ~= tab then
 			tween(button, { BackgroundTransparency = 0.45 }, 0.15)
 		end
 	end)
 
 	button.MouseLeave:Connect(function()
-		tween(tooltip, { GroupTransparency = 1, Position = UDim2.new(1, 10, 0.5, 0) }, 0.15)
+		showTip(false)
 		if self.ActiveTab ~= tab then
 			tween(button, { BackgroundTransparency = 1 }, 0.2)
 		end
@@ -731,27 +760,9 @@ function DashFlow:AddTab(config)
 	})
 	tab.Page = page
 
-	label({
-		Text = config.Title or tab.Name,
-		Font = Font.GothamBold,
-		TextSize = 24,
-		Position = UDim2.fromOffset(2, 0),
-		Size = UDim2.new(1, 0, 0, 30),
-		Parent = page,
-	})
-
-	label({
-		Text = config.Subtitle or "",
-		TextSize = 12,
-		TextColor3 = Theme.SubText,
-		Position = UDim2.fromOffset(2, 32),
-		Size = UDim2.new(1, 0, 0, 16),
-		Parent = page,
-	})
-
 	local scroll = create("ScrollingFrame", {
-		Position = UDim2.fromOffset(0, 60),
-		Size = UDim2.new(1, 0, 1, -60),
+		Position = UDim2.fromOffset(0, 0),
+		Size = UDim2.fromScale(1, 1),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		ScrollBarThickness = 3,
@@ -761,7 +772,7 @@ function DashFlow:AddTab(config)
 		AutomaticCanvasSize = Auto.Y,
 		ScrollingDirection = Enum.ScrollingDirection.Y,
 		Parent = page,
-	}, { listLayout(12), padding(0, 12, 0, 10) })
+	}, { listLayout(12), padding(2, 12, 2, 10) })
 	tab.Scroll = scroll
 
 	tab.Top = create("Frame", {
@@ -1438,8 +1449,6 @@ function DashFlow:AddDashboard(config)
 	local tab = self:AddTab({
 		Name = config.Name or "Dashboard",
 		Icon = config.Icon or DashFlow.Icons.Home,
-		Title = config.Title or ("Welcome back, " .. LocalPlayer.DisplayName),
-		Subtitle = config.Subtitle or "Live overview of your session, server and performance",
 	})
 
 	local top = tab:GetTop()
@@ -1944,143 +1953,4 @@ function DashFlow:AddDashboard(config)
 	return tab
 end
 
-local notificationsEnabled = true
-local notificationDuration = 4
-
-local Window = DashFlow.new({
-	Name = "DashFlow",
-	Role = "Admin",
-	ToggleKey = Enum.KeyCode.RightShift,
-})
-
-local function notify(title, content)
-	if notificationsEnabled then
-		Window:Notify({ Title = title, Content = content, Duration = notificationDuration })
-	end
-end
-
-local function getHumanoid()
-	local character = LocalPlayer.Character
-	return character and character:FindFirstChildOfClass("Humanoid")
-end
-
-local Dashboard = Window:AddDashboard()
-
-local playerInfo = Dashboard:AddSection({ Name = "Player Info", Side = "Left", Icon = DashFlow.Icons.Player })
-playerInfo:AddLabel("Display Name", LocalPlayer.DisplayName)
-playerInfo:AddLabel("Username", "@" .. LocalPlayer.Name)
-playerInfo:AddLabel("User ID", tostring(LocalPlayer.UserId))
-playerInfo:AddLabel("Account Age", LocalPlayer.AccountAge .. " days")
-
-local gameStatus = Dashboard:AddSection({ Name = "Game Status", side = "Right", Icon = DashFlow.Icons.Server })
-gameStatus:AddLabel("Place ID", tostring(game.PlaceId))
-gameStatus:AddLabel("Job ID", game.JobId ~= "" and string.sub(game.JobId, 1, 13) or "Studio")
-local serverAge = gameStatus:AddLabel("Server Age", "00:00:00")
-gameStatus:AddButton("Rejoin Server", function()
-	notify("Teleport", "Rejoining the current server...")
-	pcall(function()
-		game:GetService("TeleportService"):TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
-	end)
-end)
-
-task.spawn(function()
-	while Window.Alive do
-		serverAge:SetValue(formatTime(workspace.DistributedGameTime))
-		task.wait(1)
-	end
-end)
-
-local PlayerTab = Window:AddTab({
-	Name = "Player",
-	Icon = DashFlow.Icons.Player,
-	Title = "Player Controls",
-	Subtitle = "Tune your character and camera",
-})
-
-local movement = PlayerTab:AddSection({ Name = "Movement", Side = "Left", Icon = DashFlow.Icons.Bolt })
-
-movement:AddSlider("Walk Speed", 8, 100, 16, function(value)
-	local humanoid = getHumanoid()
-	if humanoid then
-		humanoid.WalkSpeed = value
-	end
-end)
-
-movement:AddSlider("Jump Height", 1, 50, 7, function(value)
-	local humanoid = getHumanoid()
-	if humanoid then
-		humanoid.JumpHeight = value
-	end
-end, 0.5)
-
-local character = PlayerTab:AddSection({ Name = "Character", Side = "Left", Icon = DashFlow.Icons.Star })
-
-character:AddButton("Reset Character", function()
-	local humanoid = getHumanoid()
-	if humanoid then
-		humanoid.Health = 0
-		notify("Character", "Your character was reset.")
-	end
-end)
-
-character:AddToggle("Show Join Messages", true, function(state)
-	notify("Toggle", "Join messages " .. (state and "enabled" or "disabled"))
-end)
-
-local cameraSection = PlayerTab:AddSection({ Name = "Camera", Side = "Right", Icon = DashFlow.Icons.Visuals })
-
-cameraSection:AddSlider("Field Of View", 40, 120, 70, function(value)
-	workspace.CurrentCamera.FieldOfView = value
-end)
-
-cameraSection:AddDropdown("Camera Mode", { "Classic", "LockFirstPerson" }, "Classic", function(value)
-	LocalPlayer.CameraMode = Enum.CameraMode[value]
-	notify("Camera", "Mode set to " .. value)
-end)
-
-cameraSection:AddTextbox("Announcement", "Type a message...", function(text, enterPressed)
-	if enterPressed and text ~= "" then
-		notify("Message", text)
-	end
-end)
-
-local SettingsTab = Window:AddTab({
-	Name = "Settings",
-	Icon = DashFlow.Icons.Settings,
-	Title = "Settings",
-	Subtitle = "Customize how DashFlow behaves",
-})
-
-local interface = SettingsTab:AddSection({ Name = "Interface", Side = "Left", Icon = DashFlow.Icons.Settings })
-
-interface:AddToggle("Show Notifications", true, function(state)
-	notificationsEnabled = state
-end)
-
-interface:AddSlider("Notification Duration", 1, 10, 4, function(value)
-	notificationDuration = value
-end)
-
-interface:AddDropdown("Toggle Key", { "RightShift", "RightControl", "Insert", "Delete" }, "RightShift", function(value)
-	Window.ToggleKey = Enum.KeyCode[value]
-end)
-
-local sessionSection = SettingsTab:AddSection({ Name = "Session", Side = "Right", Icon = DashFlow.Icons.Info })
-
-sessionSection:AddButton("Test Notification", function()
-	Window:Notify({ Title = "DashFlow", Content = "Notifications are working.", Duration = notificationDuration })
-end)
-
-sessionSection:AddButton("Hide Interface", function()
-	Window:Toggle(false)
-end)
-
-sessionSection:AddButton("Destroy Interface", function()
-	Window:Destroy()
-end)
-
-Window:Notify({
-	Title = "DashFlow",
-	Content = "Press RightShift to hide or show the interface.",
-	Duration = 5,
-})
+return DashFlow
