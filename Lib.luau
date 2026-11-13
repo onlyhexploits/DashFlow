@@ -193,6 +193,7 @@ local GlyphFallback = {
 	["chevron-down"] = "▾",
 	["music"] = "♪",
 	["play"] = "▶",
+	["play-off"] = "▷",
 	["pause"] = "‖",
 	["skip-back"] = "«",
 	["skip-forward"] = "»",
@@ -590,7 +591,12 @@ local function sanitize(key, value)
 		return nil
 	end
 	if type(default) == "boolean" then
-		return type(value) == "boolean" and value or nil
+		-- Do not write this as `type(value) == "boolean" and value or nil`:
+		-- that expression turns `false` into nil and rejects every "off" toggle.
+		if type(value) == "boolean" then
+			return value
+		end
+		return nil
 	end
 	if type(default) == "number" then
 		if type(value) ~= "number" or value ~= value then
@@ -2947,7 +2953,7 @@ function DashFlow:_setStatus(text)
 	if not ui then
 		return
 	end
-	ui.Status.Text = "● " .. text
+	ui.Status.Text = text
 
 	local color = Theme.SubText
 	if text == "PLAYING" then
@@ -2960,6 +2966,20 @@ function DashFlow:_setStatus(text)
 		color = Theme.Accent
 	end
 	ui.Status.TextColor3 = color
+
+	-- "play" while playing (or loading to play), "play-off" in every other state.
+	-- The icon is only rebuilt when that on/off state changes.
+	local on = text == "PLAYING" or text == "LOADING"
+	if ui.StatusIcon == nil or ui.StatusOn ~= on then
+		if ui.StatusIcon then
+			ui.StatusIcon:Destroy()
+		end
+		ui.StatusOn = on
+		ui.StatusIcon = makeIcon(ui.StatusIconHolder, on and "play" or "play-off", 12, color)
+	end
+
+	local colorProperty = ui.StatusIcon:IsA("ImageLabel") and "ImageColor3" or "TextColor3"
+	ui.StatusIcon[colorProperty] = color
 end
 
 -- Swaps the play/pause icon to match the playback state.
@@ -3214,16 +3234,34 @@ function DashFlow:AddMusicTab(config)
 		Parent = card,
 	})
 
+	-- Status row: a Lucide icon ("play" while playing, "play-off" otherwise)
+	-- followed by the status text. It grows leftwards from the right edge.
+	local statusRow = create("Frame", {
+		Name = "Status",
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -16, 0, 18),
+		Size = UDim2.fromOffset(0, 16),
+		AutomaticSize = Auto.X,
+		BackgroundTransparency = 1,
+		Parent = card,
+	}, { listLayout(5, Direction.Horizontal, HAlign.Left, VAlign.Center) })
+
+	local statusIconHolder = create("Frame", {
+		Size = UDim2.fromOffset(14, 14),
+		BackgroundTransparency = 1,
+		LayoutOrder = 1,
+		Parent = statusRow,
+	})
+
 	local status = label({
-		Text = "● NO TRACK",
+		Text = "NO TRACK",
 		Font = Font.GothamBold,
 		TextSize = 11,
 		TextColor3 = Theme.SubText,
-		TextXAlignment = TextAlign.Right,
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, -16, 0, 18),
-		Size = UDim2.fromOffset(120, 16),
-		Parent = card,
+		AutomaticSize = Auto.X,
+		Size = UDim2.fromOffset(0, 16),
+		LayoutOrder = 2,
+		Parent = statusRow,
 	})
 
 	-- Waveform area.
@@ -3358,6 +3396,7 @@ function DashFlow:AddMusicTab(config)
 		ProgressFill = progressFill,
 		PlayButton = playButton,
 		PlayIcon = playIcon,
+		StatusIconHolder = statusIconHolder,
 	}
 
 	-- Sections under the card.
