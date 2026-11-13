@@ -391,10 +391,30 @@ function DashFlow.new(config)
 		Parent = main,
 	}, { corner(16), stroke(Theme.Stroke) })
 
+	local logo = create("Frame", {
+		Name = "Logo",
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 10),
+		Size = UDim2.fromOffset(44, 44),
+		BackgroundColor3 = Theme.Accent,
+		BorderSizePixel = 0,
+		Parent = sidebar,
+	}, { corner(14) })
+	makeIcon(logo, config.Logo or DashFlow.Icons.Logo, 20, INK)
+
+	create("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 64),
+		Size = UDim2.fromOffset(28, 1),
+		BackgroundColor3 = Theme.Stroke,
+		BorderSizePixel = 0,
+		Parent = sidebar,
+	})
+
 	self.TabHolder = create("Frame", {
 		Name = "Tabs",
-		Position = UDim2.fromOffset(0, 10),
-		Size = UDim2.new(1, 0, 1, -20),
+		Position = UDim2.fromOffset(0, 76),
+		Size = UDim2.new(1, 0, 1, -86),
 		BackgroundTransparency = 1,
 		Parent = sidebar,
 	}, { listLayout(8, Direction.Vertical, HAlign.Center) })
