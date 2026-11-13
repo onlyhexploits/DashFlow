@@ -4,6 +4,8 @@ local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Stats = game:GetService("Stats")
 local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService") -- JSON encode/decode for saved settings
+local SoundService = game:GetService("SoundService") -- parent of the music Sound
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -189,6 +191,14 @@ local GlyphFallback = {
 	["wifi"] = "⇅",
 	["chevron-right"] = "›",
 	["chevron-down"] = "▾",
+	["music"] = "♪",
+	["play"] = "▶",
+	["pause"] = "‖",
+	["skip-back"] = "«",
+	["skip-forward"] = "»",
+	["palette"] = "◐",
+	["bell"] = "◔",
+	["save"] = "▣",
 }
 
 local function resolveImage(name)
@@ -309,6 +319,357 @@ local function getPing()
 	return 0
 end
 
+-- ============================================================================
+-- THEMES
+-- A palette only contains the colors that change between themes. `Purple` is the
+-- primary accent and `Pink` is the secondary accent (the key names are kept for
+-- backwards compatibility). Text, SubText and the status colors never change.
+-- Every color inside one palette must be unique, because live recoloring finds
+-- the elements to change by matching their current color against the old palette.
+-- ============================================================================
+local THEME_KEYS = {
+	"Background", "Sidebar", "Card", "Element", "ElementHover", "Active",
+	"Track", "Ghost", "Stroke", "Accent", "Purple", "Pink",
+}
+
+local Themes = {} -- name -> full palette
+local ThemeOrder = {} -- names in registration order (first one is the default)
+local ActiveThemeName -- palette currently written into the shared Theme table
+
+-- Registers (or replaces) a palette. Missing keys fall back to the default palette.
+local function registerPalette(name, palette)
+	local base = Themes[ThemeOrder[1]]
+	local full = {}
+	local seen = {}
+	for _, key in ipairs(THEME_KEYS) do
+		local color = palette[key] or (base and base[key]) or Theme[key]
+		full[key] = color
+		local hex = color:ToHex()
+		if seen[hex] then
+			warn(("DashFlow: theme '%s' uses the same color for %s and %s; live recoloring may be inaccurate."):format(name, seen[hex], key))
+		end
+		seen[hex] = key
+	end
+	if not Themes[name] then
+		table.insert(ThemeOrder, name)
+	end
+	Themes[name] = full
+end
+
+-- Writes a palette into the shared Theme table so newly created elements use it.
+local function setPalette(name)
+	local palette = Themes[name]
+	if not palette then
+		return false
+	end
+	for _, key in ipairs(THEME_KEYS) do
+		Theme[key] = palette[key]
+	end
+	ActiveThemeName = name
+	return true
+end
+
+-- Built-in themes. The first one is a snapshot of the original Theme values.
+do
+	local original = {}
+	for _, key in ipairs(THEME_KEYS) do
+		original[key] = Theme[key]
+	end
+	registerPalette("Dash Purple / Pink", original)
+	ActiveThemeName = "Dash Purple / Pink"
+end
+
+registerPalette("Neon Purple / Electric Blue", {
+	Background = Color3.fromRGB(8, 9, 18),
+	Sidebar = Color3.fromRGB(12, 14, 26),
+	Card = Color3.fromRGB(15, 17, 30),
+	Element = Color3.fromRGB(21, 24, 41),
+	ElementHover = Color3.fromRGB(29, 33, 56),
+	Active = Color3.fromRGB(30, 36, 78),
+	Track = Color3.fromRGB(32, 37, 62),
+	Ghost = Color3.fromRGB(54, 64, 100),
+	Stroke = Color3.fromRGB(31, 36, 62),
+	Accent = Color3.fromRGB(120, 190, 255),
+	Purple = Color3.fromRGB(160, 80, 255),
+	Pink = Color3.fromRGB(40, 160, 255),
+})
+
+registerPalette("Cyberpunk Red / Gold", {
+	Background = Color3.fromRGB(14, 8, 9),
+	Sidebar = Color3.fromRGB(20, 12, 13),
+	Card = Color3.fromRGB(25, 15, 16),
+	Element = Color3.fromRGB(35, 21, 23),
+	ElementHover = Color3.fromRGB(48, 29, 32),
+	Active = Color3.fromRGB(78, 30, 36),
+	Track = Color3.fromRGB(54, 34, 37),
+	Ghost = Color3.fromRGB(92, 56, 60),
+	Stroke = Color3.fromRGB(52, 32, 35),
+	Accent = Color3.fromRGB(255, 120, 110),
+	Purple = Color3.fromRGB(255, 59, 70),
+	Pink = Color3.fromRGB(255, 196, 45),
+})
+
+registerPalette("Matrix Green / Cyan", {
+	Background = Color3.fromRGB(6, 12, 10),
+	Sidebar = Color3.fromRGB(10, 18, 15),
+	Card = Color3.fromRGB(12, 22, 18),
+	Element = Color3.fromRGB(17, 31, 26),
+	ElementHover = Color3.fromRGB(24, 44, 36),
+	Active = Color3.fromRGB(22, 66, 50),
+	Track = Color3.fromRGB(28, 50, 42),
+	Ghost = Color3.fromRGB(46, 86, 72),
+	Stroke = Color3.fromRGB(26, 46, 38),
+	Accent = Color3.fromRGB(110, 255, 170),
+	Purple = Color3.fromRGB(30, 220, 120),
+	Pink = Color3.fromRGB(30, 210, 230),
+})
+
+local DEFAULT_THEME = ThemeOrder[1]
+
+-- Builds a lookup of "old color hex" -> "new color" for every key that differs.
+local function buildColorMap(fromPalette, toPalette)
+	local map = {}
+	for _, key in ipairs(THEME_KEYS) do
+		local from, to = fromPalette[key], toPalette[key]
+		if from and to and from ~= to then
+			map[from:ToHex()] = to
+		end
+	end
+	return map
+end
+
+-- Walks every descendant of `root` and swaps any themed color for its new value.
+-- With `animate`, all colors fade through a single NumberValue instead of
+-- creating one tween per property, which keeps big windows smooth.
+local function recolorTree(root, map, animate)
+	local propertyJobs = {} -- { instance, property, fromColor, toColor }
+	local gradientJobs = {} -- { Gradient, From = keypoints, To = colors }
+
+	local function consider(instance, property)
+		local current = instance[property]
+		local target = map[current:ToHex()]
+		if target then
+			table.insert(propertyJobs, { instance, property, current, target })
+		end
+	end
+
+	for _, item in ipairs(root:GetDescendants()) do
+		if item:IsA("GuiObject") then
+			consider(item, "BackgroundColor3")
+		end
+		if item:IsA("TextLabel") or item:IsA("TextButton") or item:IsA("TextBox") then
+			consider(item, "TextColor3")
+		end
+		if item:IsA("ImageLabel") or item:IsA("ImageButton") then
+			consider(item, "ImageColor3")
+		end
+		if item:IsA("ScrollingFrame") then
+			consider(item, "ScrollBarImageColor3")
+		end
+		if item:IsA("UIStroke") then
+			consider(item, "Color")
+		end
+		if item:IsA("UIGradient") then
+			local keypoints = item.Color.Keypoints
+			local targets = {}
+			local changed = false
+			for index, keypoint in ipairs(keypoints) do
+				local target = map[keypoint.Value:ToHex()]
+				targets[index] = target or keypoint.Value
+				changed = changed or target ~= nil
+			end
+			if changed then
+				table.insert(gradientJobs, { Gradient = item, From = keypoints, To = targets })
+			end
+		end
+	end
+
+	local function render(alpha)
+		for _, job in ipairs(propertyJobs) do
+			job[1][job[2]] = alpha >= 1 and job[4] or job[3]:Lerp(job[4], alpha)
+		end
+		for _, job in ipairs(gradientJobs) do
+			local keys = {}
+			for index, keypoint in ipairs(job.From) do
+				local value = alpha >= 1 and job.To[index] or keypoint.Value:Lerp(job.To[index], alpha)
+				keys[index] = ColorSequenceKeypoint.new(keypoint.Time, value)
+			end
+			job.Gradient.Color = ColorSequence.new(keys)
+		end
+	end
+
+	if not animate then
+		render(1)
+		return
+	end
+
+	local driver = Instance.new("NumberValue")
+	driver.Changed:Connect(render)
+	local playing = tween(driver, { Value = 1 }, 0.45, Enum.EasingStyle.Quad)
+	playing.Completed:Connect(function()
+		render(1)
+		driver:Destroy()
+	end)
+end
+
+-- ============================================================================
+-- STORAGE
+-- Uses the executor file API when it exists. Everywhere else (a normal Roblox
+-- client has no local file access) settings live in `shared` for the session.
+-- ============================================================================
+local Storage = {}
+
+function Storage.Mode()
+	if type(writefile) == "function" and type(readfile) == "function" and type(isfile) == "function" then
+		return "File"
+	end
+	return "Session"
+end
+
+-- Returns the stored text, or nil when nothing was saved yet.
+function Storage.Read(folder, file)
+	local path = folder .. "/" .. file
+	if Storage.Mode() == "File" then
+		local ok, content = pcall(function()
+			if isfile(path) then
+				return readfile(path)
+			end
+			return nil
+		end)
+		return ok and content or nil
+	end
+	local store = shared.DashFlowSessionStore
+	return store and store[path] or nil
+end
+
+-- Returns true when the text was stored successfully.
+function Storage.Write(folder, file, text)
+	local path = folder .. "/" .. file
+	if Storage.Mode() == "File" then
+		return (pcall(function()
+			if type(isfolder) == "function" and type(makefolder) == "function" and not isfolder(folder) then
+				makefolder(folder)
+			end
+			writefile(path, text)
+		end))
+	end
+	shared.DashFlowSessionStore = shared.DashFlowSessionStore or {}
+	shared.DashFlowSessionStore[path] = text
+	return true
+end
+
+-- ============================================================================
+-- CONFIG SCHEMA
+-- Every saved value is validated before use, so a damaged or hand-edited save
+-- file can never put the UI into an invalid state.
+-- ============================================================================
+local ConfigDefaults = {
+	Theme = DEFAULT_THEME,
+	Volume = 0.5, -- 0..1
+	Loop = true,
+	Track = "", -- name of the last selected track
+	Sensitivity = 1, -- visualizer loudness multiplier
+	IslandVisualizer = true,
+	Notifications = true,
+	NotificationDuration = 4,
+	ToggleKey = "RightShift",
+	UserInfo = true,
+	AutoSave = true,
+}
+
+local NumberRanges = {
+	Volume = { 0, 1 },
+	Sensitivity = { 0.5, 2.5 },
+	NotificationDuration = { 1, 10 },
+}
+
+-- Returns a cleaned value, or nil when the value is not acceptable for `key`.
+local function sanitize(key, value)
+	local default = ConfigDefaults[key]
+	if default == nil then
+		return nil
+	end
+	if type(default) == "boolean" then
+		return type(value) == "boolean" and value or nil
+	end
+	if type(default) == "number" then
+		if type(value) ~= "number" or value ~= value then
+			return nil
+		end
+		local range = NumberRanges[key]
+		return math.clamp(value, range[1], range[2])
+	end
+	if type(value) ~= "string" then
+		return nil
+	end
+	if key == "Theme" then
+		return Themes[value] and value or nil
+	end
+	if key == "ToggleKey" then
+		local ok = pcall(function()
+			return Enum.KeyCode[value]
+		end)
+		return ok and value or nil
+	end
+	return value
+end
+
+-- ============================================================================
+-- MUSIC LIBRARY (shared by every window)
+-- ============================================================================
+local MusicLibrary = {} -- ordered list of { Name, Id, Artist }
+local Windows = {} -- live windows, so registering a track updates all of them
+
+-- Accepts 1234, "1234", "rbxassetid://1234" or a full asset URL.
+local function normalizeSoundId(id)
+	if type(id) == "number" and id > 0 then
+		return "rbxassetid://" .. math.floor(id)
+	end
+	if type(id) == "string" then
+		if id:match("^%d+$") then
+			return "rbxassetid://" .. id
+		end
+		if id:match("^rbxassetid://%d+$") or id:match("^rbxasset://") or id:match("^https?://") then
+			return id
+		end
+	end
+	return nil
+end
+
+local function findTrack(name)
+	for _, track in ipairs(MusicLibrary) do
+		if track.Name == name then
+			return track
+		end
+	end
+	return nil
+end
+
+local function trackNames()
+	local names = {}
+	for _, track in ipairs(MusicLibrary) do
+		table.insert(names, track.Name)
+	end
+	return names
+end
+
+-- The waveform shared by the main visualizer and the island. `position` is 0..1
+-- along the bar row, `level` is the smoothed loudness. Idle motion keeps the
+-- bars alive during silence; loudness makes them taller.
+local function waveHeight(position, clock, level)
+	local wave1 = math.sin(position * 15 + clock * 3)
+	local wave2 = math.sin(position * 29 - clock * 2)
+	local wave3 = math.cos(position * 9 + clock * 4)
+	local wave = math.abs(wave1 * 0.45 + wave2 * 0.30 + wave3 * 0.25)
+	local audioEffect = level * 0.75
+	return math.clamp(0.025 + wave * (0.10 + audioEffect * 0.70), 0.025, 0.92)
+end
+
+local function formatClock(seconds)
+	seconds = math.max(0, math.floor(seconds or 0))
+	return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
 function DashFlow:_connect(signal, handler)
 	local connection = signal:Connect(handler)
 	table.insert(self.Connections, connection)
@@ -317,10 +678,6 @@ end
 
 function DashFlow.new(config)
 	config = config or {}
-
-	for key, value in pairs(config.Theme or {}) do
-		Theme[key] = value
-	end
 
 	local self = setmetatable({}, DashFlow)
 	self.Name = config.Name or "DashFlow"
@@ -331,8 +688,39 @@ function DashFlow.new(config)
 	self.Visible = true
 	self.ToggleToken = 0
 	self.NotifyOrder = 0
-	self.ToggleKey = config.ToggleKey or Enum.KeyCode.RightShift
 	self.StartClock = os.clock()
+	self.ThemedBars = {} -- { Instance, Ratio } entries recolored on theme change
+	self.Syncers = {} -- key -> function that pushes Config[key] into its control
+	self.SaveToken = 0
+	self.ThemeBusy = false
+	self.PendingTheme = nil
+
+	-- Settings priority: built-in defaults < window options < saved file.
+	self.Config = {}
+	for key, value in pairs(ConfigDefaults) do
+		self.Config[key] = value
+	end
+	if config.ToggleKey then
+		self.Config.ToggleKey = config.ToggleKey.Name
+	end
+	if config.UserInfoEnabled ~= nil then
+		self.Config.UserInfo = config.UserInfoEnabled and true or false
+	end
+	if type(config.DefaultTheme) == "string" and Themes[config.DefaultTheme] then
+		self.Config.Theme = config.DefaultTheme
+	end
+	self.Defaults = table.clone(self.Config)
+
+	local safeName = (tostring(self.Name):gsub("[^%w_%-]", "_"))
+	self.ConfigFolder = config.ConfigFolder or "DashFlow"
+	self.ConfigFile = (config.ConfigName or safeName) .. ".json"
+	self:_mergeStoredConfig()
+
+	-- The theme must be active before any element is created.
+	setPalette(self.Config.Theme)
+	self.ThemeName = self.Config.Theme
+	self.ToggleKey = Enum.KeyCode[self.Config.ToggleKey]
+	table.insert(Windows, self)
 
 	local parent = resolveParent(config.Parent)
 	local guiName = "DashFlow_" .. self.Name
@@ -460,7 +848,7 @@ function DashFlow.new(config)
 	}, { corner(20), stroke(Theme.Stroke) })
 
 	self.UserChip = chip
-	self.UserInfoEnabled = config.UserInfoEnabled ~= false
+	self.UserInfoEnabled = self.Config.UserInfo
 	chip.Visible = self.UserInfoEnabled
 
 	local chipAvatar = create("ImageLabel", {
@@ -501,7 +889,6 @@ function DashFlow.new(config)
 
 	local islandScale = create("UIScale", { Scale = 1 })
 	self.IslandScale = islandScale
-	self.IslandAmplitude = 1
 
 	local island = create("TextButton", {
 		Name = "Island",
@@ -554,18 +941,14 @@ function DashFlow.new(config)
 			ZIndex = 62,
 			Parent = visualizer,
 		}, { corner(2) })
+
+		-- Bar colors are a blend of the two accents, so the theme switcher
+		-- recolors them explicitly instead of by exact color matching.
+		table.insert(self.ThemedBars, { Instance = islandBars[index], Ratio = (index - 1) / 4 })
 	end
 
-	task.spawn(function()
-		local rng = Random.new()
-		while self.Alive do
-			for _, bar in ipairs(islandBars) do
-				local barHeight = math.floor(3 + rng:NextNumber() * 9 * self.IslandAmplitude)
-				tween(bar, { Size = UDim2.fromOffset(2, barHeight) }, 0.2, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
-			end
-			task.wait(0.22)
-		end
-	end)
+	-- Heights are driven every frame by DashFlow:_stepAudio (see the audio engine).
+	self.IslandBars = islandBars
 
 	island.MouseButton1Down:Connect(function()
 		tween(islandScale, { Scale = 0.92 }, 0.1)
@@ -637,6 +1020,13 @@ function DashFlow.new(config)
 		end)
 	end
 
+	-- One audio engine per window; the same smoothed loudness feeds the island
+	-- bars and the main visualizer so both always move together.
+	self:_initAudio()
+	self:_connect(RunService.RenderStepped, function(deltaTime)
+		self:_stepAudio(deltaTime)
+	end)
+
 	main.Visible = true
 	uiScale.Scale = baseScale * 0.6
 	tween(uiScale, { Scale = baseScale }, 0.5, Enum.EasingStyle.Back)
@@ -659,7 +1049,6 @@ function DashFlow:Toggle(state)
 	self.ToggleToken += 1
 	local token = self.ToggleToken
 
-	self.IslandAmplitude = state and 1 or 0.35
 	tween(self.IslandTitle, { TextTransparency = state and 0 or 0.45 }, 0.3)
 	self.IslandScale.Scale = 1.1
 	tween(self.IslandScale, { Scale = 1 }, 0.5, Enum.EasingStyle.Back)
@@ -681,8 +1070,16 @@ function DashFlow:Toggle(state)
 	end
 end
 
+-- Public toggle for the topbar profile chip. The value is saved like any setting.
 function DashFlow:SetUserInfoEnabled(state)
-	state = state and true or false
+	self:SetSetting("UserInfo", state and true or false)
+end
+
+-- Plays the slide animation; called by SetSetting("UserInfo", ...).
+function DashFlow:_applyUserInfo(state)
+	if self.UserInfoEnabled == state then
+		return
+	end
 	self.UserInfoEnabled = state
 	local chip = self.UserChip
 	if state then
@@ -724,11 +1121,33 @@ function DashFlow:_setHeader(title, desc)
 end
 
 function DashFlow:Destroy()
+	if not self.Alive then
+		return
+	end
+
+	-- Flush pending settings so the last change is never lost.
+	if self.Config.AutoSave then
+		self:SaveConfig(true)
+	end
+
 	self.Alive = false
 	for _, connection in ipairs(self.Connections) do
 		connection:Disconnect()
 	end
 	self.Connections = {}
+
+	if self.Sound then
+		self.Sound:Destroy()
+		self.Sound = nil
+	end
+
+	for index, window in ipairs(Windows) do
+		if window == self then
+			table.remove(Windows, index)
+			break
+		end
+	end
+
 	self.Gui:Destroy()
 end
 
@@ -759,7 +1178,13 @@ function DashFlow:Notify(config)
 		config = { Content = config }
 	end
 	config = config or {}
-	local duration = config.Duration or 4
+
+	-- `Force = true` shows the toast even when notifications are switched off.
+	if config.Force ~= true and self.Config.Notifications == false then
+		return
+	end
+
+	local duration = config.Duration or self.Config.NotificationDuration or 4
 	self.NotifyOrder += 1
 
 	local wrapper = create("Frame", {
@@ -1544,11 +1969,12 @@ function Section:AddDropdown(text, options, default, callback)
 		return selected
 	end
 
-	function api:Refresh(newOptions, newDefault)
+	function api:Refresh(newOptions, ...)
 		options = newOptions or {}
-		if newDefault ~= nil then
-			selected = newDefault
-			current.Text = tostring(newDefault)
+		-- Passing a second argument (even nil) replaces the selection.
+		if select("#", ...) > 0 then
+			selected = (...)
+			current.Text = selected ~= nil and tostring(selected) or "Select"
 		end
 		rebuild()
 		render(true)
@@ -2125,6 +2551,952 @@ function DashFlow:AddDashboard(config)
 			end
 			task.wait(1)
 		end
+	end)
+
+	return tab
+end
+
+-- ============================================================================
+-- SETTINGS: load / save / apply
+-- ============================================================================
+
+-- Reads the saved file (if any) and merges every valid value into self.Config.
+-- Returns true when a save file was found and decoded.
+function DashFlow:_mergeStoredConfig()
+	local text = Storage.Read(self.ConfigFolder, self.ConfigFile)
+	if not text then
+		return false
+	end
+
+	local ok, decoded = pcall(HttpService.JSONDecode, HttpService, text)
+	if not ok or type(decoded) ~= "table" or type(decoded.Settings) ~= "table" then
+		warn("DashFlow: ignoring unreadable settings file " .. self.ConfigFile)
+		return false
+	end
+
+	for key in pairs(ConfigDefaults) do
+		local clean = sanitize(key, decoded.Settings[key])
+		if clean ~= nil then
+			self.Config[key] = clean
+		end
+	end
+	return true
+end
+
+-- Debounced save: rapid changes (slider drags) collapse into a single write.
+function DashFlow:_scheduleSave()
+	if not self.Config.AutoSave then
+		return
+	end
+	self.SaveToken += 1
+	local token = self.SaveToken
+	task.delay(0.6, function()
+		if self.Alive and token == self.SaveToken then
+			self:SaveConfig(true)
+		end
+	end)
+end
+
+-- Writes the current settings. `silent` suppresses the confirmation toast.
+function DashFlow:SaveConfig(silent)
+	local ok, encoded = pcall(HttpService.JSONEncode, HttpService, {
+		Version = 1,
+		Settings = self.Config,
+	})
+	if not ok then
+		warn("DashFlow: could not encode settings: " .. tostring(encoded))
+		return false
+	end
+
+	local saved = Storage.Write(self.ConfigFolder, self.ConfigFile, encoded)
+
+	if not silent and self.Alive then
+		local message
+		if not saved then
+			message = "Could not save your settings."
+		elseif Storage.Mode() == "File" then
+			message = "Saved to " .. self.ConfigFolder .. "/" .. self.ConfigFile
+		else
+			message = "Saved for this session (file access is not available here)."
+		end
+		self:Notify({ Title = "Settings", Content = message })
+	end
+	return saved
+end
+
+-- Loads the saved settings and applies them to the running UI.
+function DashFlow:LoadConfig(silent)
+	local found = self:_mergeStoredConfig()
+	if found then
+		self:_applyAll()
+		self:_syncControls()
+	end
+	if not silent then
+		self:Notify({
+			Title = "Settings",
+			Content = found and "Saved settings loaded." or "No saved settings were found.",
+		})
+	end
+	return found
+end
+
+-- Restores the window defaults and applies them.
+function DashFlow:ResetConfig()
+	for key, value in pairs(self.Defaults) do
+		self.Config[key] = value
+	end
+	-- Keep whatever track is selected right now.
+	self.Config.Track = self.Audio and self.Audio.Track and self.Audio.Track.Name or ""
+	self:_applyAll()
+	self:_syncControls()
+	self:_scheduleSave()
+	self:Notify({ Title = "Settings", Content = "Settings were reset to their defaults." })
+end
+
+function DashFlow:GetSetting(key)
+	return self.Config[key]
+end
+
+-- Validates, stores, applies and (if AutoSave is on) saves one setting.
+-- Returns false when the value is not valid for that key.
+function DashFlow:SetSetting(key, value)
+	local clean = sanitize(key, value)
+	if clean == nil then
+		warn(("DashFlow: invalid value for setting '%s'"):format(tostring(key)))
+		return false
+	end
+	if self.Config[key] == clean then
+		return true
+	end
+
+	self.Config[key] = clean
+	self:_applySetting(key, clean)
+
+	if key == "AutoSave" then
+		-- Always persist the preference itself, even when turning saving off.
+		self:SaveConfig(true)
+	else
+		self:_scheduleSave()
+	end
+	return true
+end
+
+-- Pushes one setting into the part of the UI that uses it.
+function DashFlow:_applySetting(key, value)
+	if key == "Theme" then
+		self:_applyTheme(value, true)
+	elseif key == "Volume" then
+		if self.Sound then
+			self.Sound.Volume = value
+		end
+	elseif key == "Loop" then
+		if self.Sound then
+			self.Sound.Looped = value
+		end
+	elseif key == "ToggleKey" then
+		self.ToggleKey = Enum.KeyCode[value]
+	elseif key == "UserInfo" then
+		self:_applyUserInfo(value)
+	end
+end
+
+function DashFlow:_applyAll()
+	for key in pairs(ConfigDefaults) do
+		self:_applySetting(key, self.Config[key])
+	end
+	if self.Config.Track ~= "" and findTrack(self.Config.Track) then
+		self:SelectTrack(self.Config.Track, false)
+	end
+end
+
+-- Controls register a function here so loading or resetting settings can move
+-- their widgets without firing their callbacks.
+function DashFlow:_bind(key, syncer)
+	self.Syncers[key] = syncer
+end
+
+function DashFlow:_syncControls()
+	for _, syncer in pairs(self.Syncers) do
+		local ok, err = pcall(syncer)
+		if not ok then
+			warn("DashFlow: could not sync a control: " .. tostring(err))
+		end
+	end
+end
+
+-- ============================================================================
+-- THEME SWITCHING
+-- ============================================================================
+
+-- Public: switch theme by name (saved automatically).
+function DashFlow:SetTheme(name)
+	return self:SetSetting("Theme", name)
+end
+
+function DashFlow:GetThemes()
+	return table.clone(ThemeOrder)
+end
+
+-- Fades every themed color in this window to the new palette.
+function DashFlow:_applyTheme(name, animate)
+	local palette = Themes[name]
+	if not palette or self.ThemeName == name then
+		return
+	end
+
+	-- While a fade is running only the latest request is remembered, so quick
+	-- successive switches can never leave half-recolored elements behind.
+	if self.ThemeBusy then
+		self.PendingTheme = name
+		return
+	end
+
+	local map = buildColorMap(Themes[self.ThemeName], palette)
+	setPalette(name)
+	self.ThemeName = name
+	recolorTree(self.Gui, map, animate)
+
+	-- Visualizer bars use blended colors, so they are recolored explicitly.
+	for _, entry in ipairs(self.ThemedBars) do
+		local color = Theme.Purple:Lerp(Theme.Pink, entry.Ratio)
+		if animate then
+			tween(entry.Instance, { BackgroundColor3 = color }, 0.45, Enum.EasingStyle.Quad)
+		else
+			entry.Instance.BackgroundColor3 = color
+		end
+	end
+
+	if animate then
+		self.ThemeBusy = true
+		task.delay(0.5, function()
+			self.ThemeBusy = false
+			local pending = self.PendingTheme
+			self.PendingTheme = nil
+			if self.Alive and pending and pending ~= self.ThemeName then
+				self:_applyTheme(pending, true)
+			end
+		end)
+	end
+end
+
+-- Adds a custom theme. Missing keys fall back to the default palette.
+-- Keep every color in the palette unique (see the THEMES section).
+function DashFlow:RegisterTheme(name, palette)
+	if type(name) ~= "string" or name == "" or type(palette) ~= "table" then
+		warn("DashFlow:RegisterTheme expects (name: string, palette: table)")
+		return false
+	end
+	registerPalette(name, palette)
+	for _, window in ipairs(Windows) do
+		window:_refreshThemeList()
+	end
+	return true
+end
+
+function DashFlow:_refreshThemeList()
+	if self.ThemeDropdown then
+		self.ThemeDropdown:Refresh(table.clone(ThemeOrder), self.Config.Theme)
+	end
+end
+
+-- ============================================================================
+-- MUSIC LIBRARY API
+-- ============================================================================
+
+-- DashFlow:RegisterMusic("Song Name", 1234567890, "Artist")
+-- `id` may be a number, a numeric string, "rbxassetid://..." or an asset URL.
+function DashFlow:RegisterMusic(name, id, artist)
+	if type(name) ~= "string" or name == "" then
+		warn("DashFlow:RegisterMusic expects a non-empty track name")
+		return false
+	end
+
+	local soundId = normalizeSoundId(id)
+	if not soundId then
+		warn(("DashFlow:RegisterMusic - '%s' has an invalid sound ID"):format(name))
+		return false
+	end
+
+	local existing = findTrack(name)
+	if existing then
+		existing.Id = soundId
+		existing.Artist = artist or existing.Artist
+	else
+		table.insert(MusicLibrary, {
+			Name = name,
+			Id = soundId,
+			Artist = artist or "Unknown Artist",
+		})
+	end
+
+	for _, window in ipairs(Windows) do
+		window:_refreshMusicList()
+	end
+	return true
+end
+
+function DashFlow:UnregisterMusic(name)
+	for index, track in ipairs(MusicLibrary) do
+		if track.Name == name then
+			table.remove(MusicLibrary, index)
+			for _, window in ipairs(Windows) do
+				window:_refreshMusicList()
+			end
+			return true
+		end
+	end
+	return false
+end
+
+-- Returns a copy of the registered tracks: { { Name, Id, Artist }, ... }
+function DashFlow:GetMusic()
+	local copy = {}
+	for _, track in ipairs(MusicLibrary) do
+		table.insert(copy, { Name = track.Name, Id = track.Id, Artist = track.Artist })
+	end
+	return copy
+end
+
+-- ============================================================================
+-- AUDIO ENGINE
+-- One Sound per window. The smoothed loudness it produces drives the island
+-- bars and the main visualizer, so they always match.
+-- ============================================================================
+
+function DashFlow:_initAudio()
+	local sound = Instance.new("Sound")
+	sound.Name = "DashFlowMusic"
+	sound.Volume = self.Config.Volume
+	sound.Looped = self.Config.Loop
+	sound.Parent = SoundService
+	self.Sound = sound
+
+	self.Audio = {
+		Level = 0, -- smoothed loudness (0..1.5)
+		Clock = 0, -- animation time
+		UiTimer = 0, -- throttles text updates
+		Playing = false,
+		Paused = false,
+		Track = nil,
+		Status = "NO TRACK",
+		LoadToken = 0, -- cancels stale load watchers
+	}
+
+	-- A non-looping track stops at the end; bring the UI back to "ready".
+	sound.Ended:Connect(function()
+		if self.Alive and not sound.Looped then
+			self.Audio.Playing = false
+			self.Audio.Paused = false
+			self:_setStatus("FINISHED")
+			self:_syncPlayIcon()
+		end
+	end)
+end
+
+-- Runs every rendered frame.
+function DashFlow:_stepAudio(deltaTime)
+	local audio = self.Audio
+	local sound = self.Sound
+	if not audio or not sound then
+		return
+	end
+
+	audio.Clock += deltaTime
+
+	-- Real loudness while playing, silence otherwise. The smoothing means bars
+	-- ease toward the new value instead of flickering.
+	local loudness = 0
+	if sound.IsPlaying then
+		loudness = sound.PlaybackLoudness / 350 * self.Config.Sensitivity
+	end
+	loudness = math.clamp(loudness, 0, 1.5)
+	audio.Level += (loudness - audio.Level) * math.min(deltaTime * 12, 1)
+
+	-- Island bars (always visible).
+	local islandBars = self.IslandBars
+	local islandEnabled = self.Config.IslandVisualizer
+	for index, bar in ipairs(islandBars) do
+		local height = islandEnabled and waveHeight(index / #islandBars, audio.Clock, audio.Level) or 0.025
+		bar.Size = UDim2.fromOffset(2, math.max(2, 2 + height * 13))
+	end
+
+	-- Main visualizer: only updated while the Music tab is actually on screen.
+	local ui = self.MusicUI
+	if ui and self.Visible and self.ActiveTab == ui.Tab then
+		local count = #ui.Bars
+		for index, bar in ipairs(ui.Bars) do
+			local height = waveHeight(index / count, audio.Clock, audio.Level)
+			bar.Size = UDim2.fromScale(ui.BarWidth, height)
+			bar.BackgroundTransparency = 0.15 + (1 - height) * 0.35
+		end
+
+		audio.UiTimer += deltaTime
+		if audio.UiTimer >= 0.25 then
+			audio.UiTimer = 0
+			local length = sound.TimeLength
+			ui.Elapsed.Text = formatClock(sound.TimePosition)
+			ui.Duration.Text = formatClock(length)
+			ui.ProgressFill.Size = UDim2.fromScale(length > 0 and math.clamp(sound.TimePosition / length, 0, 1) or 0, 1)
+		end
+	end
+end
+
+function DashFlow:_setStatus(text)
+	self.Audio.Status = text
+	local ui = self.MusicUI
+	if not ui then
+		return
+	end
+	ui.Status.Text = "● " .. text
+
+	local color = Theme.SubText
+	if text == "PLAYING" then
+		color = Theme.Success
+	elseif text == "PAUSED" or text == "LOADING" then
+		color = Theme.Warning
+	elseif text == "LOAD FAILED" then
+		color = Theme.Danger
+	elseif text == "READY" then
+		color = Theme.Accent
+	end
+	ui.Status.TextColor3 = color
+end
+
+-- Swaps the play/pause icon to match the playback state.
+function DashFlow:_syncPlayIcon()
+	local ui = self.MusicUI
+	if not ui then
+		return
+	end
+	if ui.PlayIcon then
+		ui.PlayIcon:Destroy()
+	end
+	ui.PlayIcon = makeIcon(ui.PlayButton, self.Audio.Playing and "pause" or "play", 18, INK)
+end
+
+function DashFlow:_renderTrackInfo()
+	local ui = self.MusicUI
+	if not ui then
+		return
+	end
+	local track = self.Audio.Track
+	ui.Title.Text = track and track.Name or "No track selected"
+	ui.Artist.Text = track and track.Artist or "Register tracks with DashFlow:RegisterMusic(name, id)"
+end
+
+-- Rebuilds the track dropdown and keeps the selection valid after the library
+-- changed (track added, replaced or removed).
+function DashFlow:_refreshMusicList()
+	local ui = self.MusicUI
+	if not ui or not self.Alive then
+		return
+	end
+
+	local audio = self.Audio
+	local current = audio.Track
+
+	if current and not findTrack(current.Name) then
+		self:Stop()
+		audio.Track = nil
+		current = nil
+	end
+
+	if current and self.Sound.SoundId ~= current.Id then
+		-- The ID of the selected track was replaced; reload it.
+		self:SelectTrack(current.Name, audio.Playing)
+	end
+
+	if not current then
+		local wanted = self.Config.Track ~= "" and findTrack(self.Config.Track) or nil
+		local pick = wanted or MusicLibrary[1]
+		if pick then
+			self:SelectTrack(pick.Name, false)
+		else
+			self:_setStatus("NO TRACK")
+		end
+	end
+
+	ui.TrackDropdown:Refresh(trackNames(), audio.Track and audio.Track.Name or nil)
+	ui.LibraryLabel:SetValue(#MusicLibrary .. (#MusicLibrary == 1 and " track" or " tracks"))
+	self:_renderTrackInfo()
+end
+
+function DashFlow:SelectTrack(name, autoplay)
+	local track = findTrack(name)
+	if not track then
+		return false
+	end
+
+	local audio = self.Audio
+	if audio.Track ~= track or self.Sound.SoundId ~= track.Id then
+		self.Sound:Stop()
+		self.Sound.SoundId = track.Id
+		self.Sound.TimePosition = 0
+		audio.Playing = false
+		audio.Paused = false
+		audio.LoadToken += 1
+	end
+	audio.Track = track
+
+	if self.Config.Track ~= track.Name then
+		self.Config.Track = track.Name
+		self:_scheduleSave()
+	end
+
+	if self.MusicUI then
+		self.MusicUI.TrackDropdown:Set(track.Name, true)
+	end
+	self:_renderTrackInfo()
+	self:_setStatus("READY")
+	self:_syncPlayIcon()
+
+	if autoplay then
+		self:Play()
+	end
+	return true
+end
+
+-- step = 1 for the next track, -1 for the previous one (wraps around).
+function DashFlow:NextTrack(step)
+	local count = #MusicLibrary
+	if count == 0 then
+		return false
+	end
+	local index = 0
+	for position, track in ipairs(MusicLibrary) do
+		if track == self.Audio.Track then
+			index = position
+			break
+		end
+	end
+	local target = ((index - 1 + step) % count) + 1
+	return self:SelectTrack(MusicLibrary[target].Name, self.Audio.Playing)
+end
+
+function DashFlow:Play(trackName)
+	if trackName and not self:SelectTrack(trackName, false) then
+		return false
+	end
+
+	local audio = self.Audio
+	if not audio.Track then
+		self:_setStatus("NO TRACK")
+		self:Notify({ Title = "Music", Content = "No track registered. Use DashFlow:RegisterMusic(name, id)." })
+		return false
+	end
+
+	if audio.Paused then
+		self.Sound:Resume()
+	else
+		self.Sound:Play()
+	end
+	audio.Playing = true
+	audio.Paused = false
+	self:_setStatus("PLAYING")
+	self:_syncPlayIcon()
+	self:_watchLoad()
+	return true
+end
+
+function DashFlow:Pause()
+	local audio = self.Audio
+	if not audio.Playing then
+		return
+	end
+	self.Sound:Pause()
+	audio.Playing = false
+	audio.Paused = true
+	self:_setStatus("PAUSED")
+	self:_syncPlayIcon()
+end
+
+function DashFlow:Stop()
+	local audio = self.Audio
+	self.Sound:Stop()
+	audio.Playing = false
+	audio.Paused = false
+	audio.LoadToken += 1
+	self:_setStatus(audio.Track and "READY" or "NO TRACK")
+	self:_syncPlayIcon()
+end
+
+function DashFlow:TogglePlay()
+	if self.Audio.Playing then
+		self:Pause()
+	else
+		self:Play()
+	end
+end
+
+-- Roblox has no "load failed" event, so wait for IsLoaded and give up after a
+-- timeout. This catches bad IDs and audio the game is not allowed to use.
+function DashFlow:_watchLoad()
+	local audio = self.Audio
+	if self.Sound.IsLoaded then
+		return
+	end
+
+	audio.LoadToken += 1
+	local token = audio.LoadToken
+	self:_setStatus("LOADING")
+
+	task.spawn(function()
+		local waited = 0
+		while self.Alive and token == audio.LoadToken and not self.Sound.IsLoaded and waited < 10 do
+			task.wait(0.25)
+			waited += 0.25
+		end
+
+		if not self.Alive or token ~= audio.LoadToken then
+			return
+		end
+
+		if self.Sound.IsLoaded then
+			self:_setStatus(audio.Playing and "PLAYING" or "READY")
+		else
+			local name = audio.Track and audio.Track.Name or "track"
+			self.Sound:Stop()
+			audio.Playing = false
+			audio.Paused = false
+			self:_setStatus("LOAD FAILED")
+			self:_syncPlayIcon()
+			self:Notify({
+				Title = "Music",
+				Content = ('Could not load "%s". Check the asset ID and that the audio is allowed in this game.'):format(name),
+			})
+		end
+	end)
+end
+
+-- ============================================================================
+-- BUILT-IN TABS
+-- ============================================================================
+
+-- Music player with the main visualizer. Build it once per window.
+function DashFlow:AddMusicTab(config)
+	config = config or {}
+
+	local tab = self:AddTab({
+		Name = config.Name or "Music",
+		Icon = config.Icon or "music",
+		Desc = config.Desc or "Play your tracks and watch the visualizer react in real time",
+	})
+
+	local BAR_COUNT = config.BarCount or 60
+	local BAR_WIDTH = 0.58 / BAR_COUNT -- as a fraction of the wave width, so it scales with the window
+
+	-- "Now playing" card (full width, above the sections).
+	local card = create("Frame", {
+		Name = "NowPlaying",
+		Size = UDim2.new(1, 0, 0, 236),
+		BackgroundColor3 = Theme.Card,
+		BorderSizePixel = 0,
+		Parent = tab:GetTop(),
+	}, { corner(16), stroke(Theme.Stroke) })
+
+	local title = label({
+		Text = "No track selected",
+		Font = Font.GothamBold,
+		TextSize = 16,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Position = UDim2.fromOffset(16, 12),
+		Size = UDim2.new(1, -150, 0, 22),
+		Parent = card,
+	})
+
+	local artist = label({
+		Text = "",
+		TextSize = 11,
+		TextColor3 = Theme.Accent,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Position = UDim2.fromOffset(16, 34),
+		Size = UDim2.new(1, -150, 0, 14),
+		Parent = card,
+	})
+
+	local status = label({
+		Text = "● NO TRACK",
+		Font = Font.GothamBold,
+		TextSize = 11,
+		TextColor3 = Theme.SubText,
+		TextXAlignment = TextAlign.Right,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -16, 0, 18),
+		Size = UDim2.fromOffset(120, 16),
+		Parent = card,
+	})
+
+	-- Waveform area.
+	local wave = create("Frame", {
+		Name = "Wave",
+		Position = UDim2.fromOffset(14, 60),
+		Size = UDim2.new(1, -28, 0, 100),
+		BackgroundColor3 = Theme.Sidebar,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		Parent = card,
+	}, { corner(12), stroke(Theme.Stroke) })
+
+	create("Frame", {
+		Name = "CenterLine",
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.fromScale(0, 0.5),
+		Size = UDim2.new(1, 0, 0, 1),
+		BackgroundColor3 = Theme.Accent,
+		BackgroundTransparency = 0.7,
+		BorderSizePixel = 0,
+		Parent = wave,
+	})
+
+	local bars = {}
+	for index = 1, BAR_COUNT do
+		local ratio = (index - 1) / math.max(BAR_COUNT - 1, 1)
+		local bar = create("Frame", {
+			Name = "Bar" .. index,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.015 + ratio * 0.97, 0.5),
+			Size = UDim2.fromScale(BAR_WIDTH, 0.025),
+			BackgroundColor3 = Theme.Purple:Lerp(Theme.Pink, ratio),
+			BorderSizePixel = 0,
+			Parent = wave,
+		}, { corner(3) })
+		bars[index] = bar
+		table.insert(self.ThemedBars, { Instance = bar, Ratio = ratio })
+	end
+
+	-- Progress (display only).
+	local elapsed = label({
+		Text = "0:00",
+		TextSize = 11,
+		TextColor3 = Theme.SubText,
+		Position = UDim2.fromOffset(16, 166),
+		Size = UDim2.fromOffset(44, 16),
+		Parent = card,
+	})
+
+	local progress = create("Frame", {
+		Position = UDim2.new(0, 64, 0, 172),
+		Size = UDim2.new(1, -128, 0, 4),
+		BackgroundColor3 = Theme.Track,
+		BorderSizePixel = 0,
+		Parent = card,
+	}, { corner(2) })
+
+	local progressFill = create("Frame", {
+		Size = UDim2.fromScale(0, 1),
+		BackgroundColor3 = WHITE,
+		BorderSizePixel = 0,
+		Parent = progress,
+	}, { corner(2), gradient(Theme.Purple, Theme.Pink, 0) })
+
+	local duration = label({
+		Text = "0:00",
+		TextSize = 11,
+		TextColor3 = Theme.SubText,
+		TextXAlignment = TextAlign.Right,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -16, 0, 166),
+		Size = UDim2.fromOffset(44, 16),
+		Parent = card,
+	})
+
+	-- Transport controls.
+	local controls = create("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 190),
+		Size = UDim2.fromOffset(170, 38),
+		BackgroundTransparency = 1,
+		Parent = card,
+	}, { listLayout(10, Direction.Horizontal, HAlign.Center, VAlign.Center) })
+
+	local function controlButton(iconName, width, primary, order, onClick)
+		local button = create("TextButton", {
+			Size = UDim2.fromOffset(width, 36),
+			BackgroundColor3 = primary and Theme.Accent or Theme.Element,
+			AutoButtonColor = false,
+			Text = "",
+			LayoutOrder = order,
+			Parent = controls,
+		}, { corner(12) })
+
+		if not primary then
+			stroke(Theme.Stroke, 1, 0.2).Parent = button
+		end
+
+		local icon = makeIcon(button, iconName, 18, primary and INK or Theme.Text)
+
+		button.MouseEnter:Connect(function()
+			tween(button, { BackgroundColor3 = primary and Theme.Accent:Lerp(WHITE, 0.2) or Theme.ElementHover }, 0.15)
+		end)
+		button.MouseLeave:Connect(function()
+			tween(button, { BackgroundColor3 = primary and Theme.Accent or Theme.Element }, 0.2)
+		end)
+		button.MouseButton1Click:Connect(onClick)
+
+		return button, icon
+	end
+
+	controlButton("skip-back", 40, false, 1, function()
+		self:NextTrack(-1)
+	end)
+	local playButton, playIcon = controlButton("play", 60, true, 2, function()
+		self:TogglePlay()
+	end)
+	controlButton("skip-forward", 40, false, 3, function()
+		self:NextTrack(1)
+	end)
+
+	self.MusicUI = {
+		Tab = tab,
+		Title = title,
+		Artist = artist,
+		Status = status,
+		Bars = bars,
+		BarWidth = BAR_WIDTH,
+		Elapsed = elapsed,
+		Duration = duration,
+		ProgressFill = progressFill,
+		PlayButton = playButton,
+		PlayIcon = playIcon,
+	}
+
+	-- Sections under the card.
+	local player = tab:AddSection({ Name = "Player", Side = "Left", Icon = "music" })
+
+	self.MusicUI.TrackDropdown = player:AddDropdown("Track", trackNames(), nil, function(value)
+		self:SelectTrack(value, self.Audio.Playing)
+	end)
+
+	local volume = player:AddSlider("Volume", 0, 100, math.floor(self.Config.Volume * 100 + 0.5), function(value)
+		self:SetSetting("Volume", value / 100)
+	end)
+	self:_bind("Volume", function()
+		volume:Set(self.Config.Volume * 100, true)
+	end)
+
+	local loop = player:AddToggle("Loop", self.Config.Loop, function(state)
+		self:SetSetting("Loop", state)
+	end)
+	self:_bind("Loop", function()
+		loop:Set(self.Config.Loop, true)
+	end)
+
+	local visual = tab:AddSection({ Name = "Visualizer", Side = "Right", Icon = "activity" })
+
+	local sensitivity = visual:AddSlider("Sensitivity", 0.5, 2.5, self.Config.Sensitivity, function(value)
+		self:SetSetting("Sensitivity", value)
+	end, 0.1)
+	self:_bind("Sensitivity", function()
+		sensitivity:Set(self.Config.Sensitivity, true)
+	end)
+
+	local island = visual:AddToggle("Island Visualizer", self.Config.IslandVisualizer, function(state)
+		self:SetSetting("IslandVisualizer", state)
+	end)
+	self:_bind("IslandVisualizer", function()
+		island:Set(self.Config.IslandVisualizer, true)
+	end)
+
+	self.MusicUI.LibraryLabel = visual:AddLabel("Library", "0 tracks")
+
+	visual:AddButton("Stop", function()
+		self:Stop()
+	end)
+
+	self:_refreshMusicList()
+	self:_syncPlayIcon()
+	return tab
+end
+
+-- Built-in settings panel: theme, notifications, interface and saved config.
+function DashFlow:AddSettingsTab(config)
+	config = config or {}
+
+	local tab = self:AddTab({
+		Name = config.Name or "Settings",
+		Icon = config.Icon or DashFlow.Icons.Settings,
+		Desc = config.Desc or "Appearance, notifications and saved configuration",
+	})
+
+	-- Appearance ---------------------------------------------------------------
+	local appearance = tab:AddSection({ Name = "Appearance", Side = "Left", Icon = "palette" })
+
+	self.ThemeDropdown = appearance:AddDropdown("Theme", table.clone(ThemeOrder), self.Config.Theme, function(value)
+		self:SetSetting("Theme", value)
+	end)
+	self:_bind("Theme", function()
+		self.ThemeDropdown:Set(self.Config.Theme, true)
+	end)
+
+	local userInfo = appearance:AddToggle("Show User Info", self.Config.UserInfo, function(state)
+		self:SetSetting("UserInfo", state)
+	end)
+	self:_bind("UserInfo", function()
+		userInfo:Set(self.Config.UserInfo, true)
+	end)
+
+	-- Saved configuration --------------------------------------------------------
+	local storage = tab:AddSection({ Name = "Configuration", Side = "Left", Icon = "save" })
+
+	local autoSave = storage:AddToggle("Auto Save", self.Config.AutoSave, function(state)
+		self:SetSetting("AutoSave", state)
+	end)
+	self:_bind("AutoSave", function()
+		autoSave:Set(self.Config.AutoSave, true)
+	end)
+
+	storage:AddButton("Save Now", function()
+		self:SaveConfig()
+	end)
+	storage:AddButton("Load Saved Settings", function()
+		self:LoadConfig()
+	end)
+	storage:AddButton("Reset To Defaults", function()
+		self:ResetConfig()
+	end)
+	storage:AddLabel("Storage", Storage.Mode() == "File" and (self.ConfigFolder .. "/" .. self.ConfigFile) or "Session only")
+
+	-- Notifications ----------------------------------------------------------------
+	local notifications = tab:AddSection({ Name = "Notifications", Side = "Right", Icon = "bell" })
+
+	local showNotifications = notifications:AddToggle("Show Notifications", self.Config.Notifications, function(state)
+		self:SetSetting("Notifications", state)
+	end)
+	self:_bind("Notifications", function()
+		showNotifications:Set(self.Config.Notifications, true)
+	end)
+
+	local notifyDuration = notifications:AddSlider("Duration (seconds)", 1, 10, self.Config.NotificationDuration, function(value)
+		self:SetSetting("NotificationDuration", value)
+	end)
+	self:_bind("NotificationDuration", function()
+		notifyDuration:Set(self.Config.NotificationDuration, true)
+	end)
+
+	notifications:AddButton("Send Test Notification", function()
+		self:Notify({ Title = self.Name, Content = "Notifications are working.", Force = true })
+	end)
+
+	-- Interface ------------------------------------------------------------------------
+	local interface = tab:AddSection({ Name = "Interface", Side = "Right", Icon = DashFlow.Icons.Settings })
+
+	local toggleKey = interface:AddDropdown(
+		"Toggle Key",
+		{ "RightShift", "RightControl", "LeftAlt", "Insert", "Delete", "Home" },
+		self.Config.ToggleKey,
+		function(value)
+			self:SetSetting("ToggleKey", value)
+		end
+	)
+	self:_bind("ToggleKey", function()
+		toggleKey:Set(self.Config.ToggleKey, true)
+	end)
+
+	interface:AddButton("Hide Interface", function()
+		self:Toggle(false)
+	end)
+	interface:AddButton("Destroy Interface", function()
+		self:Destroy()
 	end)
 
 	return tab
